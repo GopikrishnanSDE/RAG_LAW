@@ -1,0 +1,70 @@
+name: Retrieval quality eval
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+
+    services:
+      db:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rag_law
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/rag_law
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      PYTHON_SERVICE_URL: http://localhost:8000
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Python deps
+        run: pip install -r requirements.txt
+
+      - name: Install Node deps
+        working-directory: api
+        run: npm install
+
+      - name: Fetch corpus PDF
+        run: curl -fsSL "${{ secrets.CORPUS_PDF_URL }}" -o data/income_tax_act_2025.pdf
+
+      - name: Ingest corpus
+        run: python scripts/ingest.py --reset
+
+      - name: Start RAG core service
+        run: nohup uvicorn rag_core.service:app --host 0.0.0.0 --port 8000 &
+
+      - name: Start Node API layer
+        working-directory: api
+        run: nohup node src/index.js &
+
+      - name: Wait for services
+        run: |
+          npx wait-on http://localhost:8000/health http://localhost:3000/health --timeout 30000
+
+      - name: Run Ragas eval gate
+        run: python eval/ragas_eval.py --api-url http://localhost:3000/api/query

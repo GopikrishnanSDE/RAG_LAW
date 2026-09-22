@@ -1,0 +1,14 @@
+venv/
+__pycache__/
+*.pyc
+.env
+
+node_modules/
+api/node_modules/
+
+# Corpus PDF is public-domain govt text but ~3MB of binary — keep the repo
+# lean; scripts/ingest.py documents where to source it.
+data/*.pdf
+
+.DS_Store
+*.egg-info/
