@@ -11,6 +11,7 @@ import json
 from contextlib import contextmanager
 
 import psycopg
+from pgvector import Vector
 from pgvector.psycopg import register_vector
 
 from rag_core import config
@@ -95,7 +96,7 @@ def insert_chunks(conn, records: list[dict]) -> None:
                     m.get("page_end"),
                     json.dumps(m.get("amendments")) if m.get("amendments") else None,
                     r["text"],
-                    r["embedding"],
+                    Vector(r["embedding"]),
                 ),
             )
 
@@ -112,6 +113,7 @@ def _row_to_dict(row, columns) -> dict:
 
 
 def vector_search(conn, query_embedding: list[float], k: int) -> list[dict]:
+    query_embedding = Vector(query_embedding)
     columns = [
         "id", "act_name", "source_file", "section_number", "section_title",
         "chapter", "part", "chunk_index", "chunk_count", "page_start",
