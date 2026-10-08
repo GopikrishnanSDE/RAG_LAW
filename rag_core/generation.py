@@ -8,7 +8,7 @@ instead of filling the gap from parametric knowledge of tax law that may be
 outdated or for the wrong jurisdiction/act version.
 """
 
-import anthropic
+import requests
 
 from rag_core import config
 
@@ -26,11 +26,43 @@ Do not guess or fill gaps from general knowledge.
 4. Be concise. This is informational, not personalized financial or legal advice."""
 
 
-def _get_client() -> "anthropic.Anthropic":
+def _get_client():
     global _client
     if _client is None:
+        import anthropic
+
         _client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
     return _client
+
+
+def _generate_anthropic(user_message: str) -> str:
+    response = _get_client().messages.create(
+        model=config.GENERATION_MODEL,
+        max_tokens=1024,
+        system=SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": user_message}],
+    )
+    return "".join(block.text for block in response.content if block.type == "text")
+
+
+def _generate_ollama(user_message: str) -> str:
+    # Local model served by Ollama (free, no key). Low temperature: this is
+    # extraction from the given context, not creative writing.
+    resp = requests.post(
+        f"{config.OLLAMA_URL}/api/chat",
+        json={
+            "model": config.GENERATION_MODEL,
+            "stream": False,
+            "options": {"temperature": 0.1},
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_message},
+            ],
+        },
+        timeout=300,
+    )
+    resp.raise_for_status()
+    return resp.json()["message"]["content"]
 
 
 def _format_context(contexts: list[dict]) -> str:
@@ -56,14 +88,8 @@ def generate_answer(query: str, contexts: list[dict]) -> dict:
         f"Retrieved context:\n\n{context_block}\n\n---\n\nQuestion: {query}"
     )
 
-    client = _get_client()
-    response = client.messages.create(
-        model=config.GENERATION_MODEL,
-        max_tokens=1024,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_message}],
-    )
-    answer_text = "".join(
-        block.text for block in response.content if block.type == "text"
-    )
+    if config.GENERATION_MODEL.startswith("claude-"):
+        answer_text = _generate_anthropic(user_message)
+    else:
+        answer_text = _generate_ollama(user_message)
     return {"answer": answer_text, "model": config.GENERATION_MODEL}

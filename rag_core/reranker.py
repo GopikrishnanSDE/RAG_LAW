@@ -1,47 +1,82 @@
-"""Cross-encoder reranking via Cohere Rerank — the precision pass RRF can't do.
+"""Cross-encoder reranking — the precision pass RRF can't do.
 
 RRF fusion ranks by *agreement between two cheap signals*, not by actually
-reading the query against each candidate. Cohere's reranker scores every
+reading the query against each candidate. A cross-encoder scores every
 (query, candidate) pair directly, which is what catches the case where a
 chunk ranks well on both vector and keyword signals but is about the wrong
 sub-section of a similar-sounding deduction.
-"""
 
-import cohere
+Backend is picked by RERANK_MODEL:
+- `rerank-*`  -> Cohere Rerank API (paid, needs COHERE_API_KEY)
+- otherwise   -> local sentence-transformers CrossEncoder (free), e.g.
+  `BAAI/bge-reranker-base`
+"""
 
 from rag_core import config
 
 _client = None
+_local_model = None
 
 
-def _get_client() -> "cohere.Client":
+def _use_cohere() -> bool:
+    return config.RERANK_MODEL.startswith("rerank-")
+
+
+def _get_client():
     global _client
     if _client is None:
+        import cohere
+
         _client = cohere.Client(api_key=config.COHERE_API_KEY)
     return _client
 
 
-def rerank(query: str, candidates: list[dict], top_n: int = config.FINAL_CONTEXT_N) -> list[dict]:
-    if not candidates:
-        return []
+def _get_local_model():
+    global _local_model
+    if _local_model is None:
+        from sentence_transformers import CrossEncoder
 
-    if not config.COHERE_API_KEY:
-        # Graceful degradation: keep RRF order rather than hard-failing when
-        # the optional reranker isn't configured (e.g. local dev, free tier
-        # exhausted).
-        return candidates[:top_n]
+        _local_model = CrossEncoder(config.RERANK_MODEL)
+    return _local_model
 
-    client = _get_client()
-    response = client.rerank(
+
+def _rerank_cohere(query: str, candidates: list[dict], top_n: int) -> list[dict]:
+    response = _get_client().rerank(
         model=config.RERANK_MODEL,
         query=query,
         documents=[c["text"] for c in candidates],
-        top_n=min(top_n, len(candidates)),
+        top_n=top_n,
     )
-
     reranked = []
     for result in response.results:
         rec = dict(candidates[result.index])
         rec["rerank_score"] = result.relevance_score
         reranked.append(rec)
     return reranked
+
+
+def _rerank_local(query: str, candidates: list[dict], top_n: int) -> list[dict]:
+    scores = _get_local_model().predict([(query, c["text"]) for c in candidates])
+    order = sorted(range(len(candidates)), key=lambda i: scores[i], reverse=True)
+    reranked = []
+    for i in order[:top_n]:
+        rec = dict(candidates[i])
+        rec["rerank_score"] = float(scores[i])
+        reranked.append(rec)
+    return reranked
+
+
+def rerank(query: str, candidates: list[dict], top_n: int = config.FINAL_CONTEXT_N) -> list[dict]:
+    if not candidates:
+        return []
+
+    top_n = min(top_n, len(candidates))
+
+    if _use_cohere():
+        if not config.COHERE_API_KEY:
+            # Graceful degradation: keep RRF order rather than hard-failing
+            # when the Cohere key isn't configured.
+            return candidates[:top_n]
+        return _rerank_cohere(query, candidates, top_n)
+
+    return _rerank_local(query, candidates, top_n)

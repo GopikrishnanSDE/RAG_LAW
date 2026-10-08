@@ -8,6 +8,7 @@ psycopg[binary]>=3.2.3
 pgvector>=0.3.6
 
 openai>=1.54.4
+sentence-transformers>=3.3.0
 cohere>=5.11.4
 anthropic>=0.39.0
 

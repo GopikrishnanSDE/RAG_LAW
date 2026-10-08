@@ -14,12 +14,14 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 COHERE_API_KEY = os.environ.get("COHERE_API_KEY")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 
-EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-small")
-EMBEDDING_DIM = int(os.environ.get("EMBEDDING_DIM", "1536"))
+EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
+EMBEDDING_DIM = int(os.environ.get("EMBEDDING_DIM", "384"))
 
-RERANK_MODEL = os.environ.get("RERANK_MODEL", "rerank-english-v3.0")
+RERANK_MODEL = os.environ.get("RERANK_MODEL", "BAAI/bge-reranker-base")
 
-GENERATION_MODEL = os.environ.get("GENERATION_MODEL", "claude-sonnet-5")
+# `claude-*` -> Anthropic API (paid); anything else -> local model via Ollama (free)
+GENERATION_MODEL = os.environ.get("GENERATION_MODEL", "qwen2.5:7b")
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 
 # Retrieval fan-out before fusion/reranking
 VECTOR_K = int(os.environ.get("VECTOR_K", "20"))
