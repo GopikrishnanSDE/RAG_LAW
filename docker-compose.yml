@@ -22,6 +22,10 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql://postgres:postgres@db:5432/rag_law
+      # Ollama runs on the host (it needs the Mac's GPU/Metal), not in compose.
+      OLLAMA_URL: http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8000:8000"
     depends_on:
