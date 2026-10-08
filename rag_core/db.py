@@ -53,6 +53,10 @@ def get_connection():
     conn = psycopg.connect(config.DATABASE_URL, autocommit=True)
     try:
         register_vector(conn)
+        # IVFFlat only scans `probes` of its `lists` clusters per query, and
+        # the default is 1 — i.e. ~1% of a 100-list index. That silently
+        # dropped the correct section from vector results; scan more.
+        conn.execute(f"SET ivfflat.probes = {config.IVFFLAT_PROBES}")
         yield conn
     finally:
         conn.close()
@@ -153,13 +157,18 @@ def keyword_search(conn, query_text: str, k: int) -> list[dict]:
             SELECT id, act_name, source_file, section_number, section_title,
                    chapter, part, chunk_index, chunk_count, page_start,
                    page_end, amendments, text,
-                   ts_rank_cd(tsv, plainto_tsquery('english', %s)) AS rank
-            FROM chunks
-            WHERE tsv @@ plainto_tsquery('english', %s)
+                   ts_rank_cd(tsv, query.q) AS rank
+            FROM chunks,
+                 -- OR the query's terms instead of plainto_tsquery's AND:
+                 -- with AND, one word absent from the statute ("available",
+                 -- "premium" vs. the Act's "premia") empties the result set.
+                 -- ts_rank_cd still ranks chunks matching more terms higher.
+                 (SELECT replace(plainto_tsquery('english', %s)::text, '&', '|')::tsquery AS q) AS query
+            WHERE tsv @@ query.q
             ORDER BY rank DESC
             LIMIT %s
             """,
-            (query_text, query_text, k),
+            (query_text, k),
         )
         rows = cur.fetchall()
     results = []
