@@ -66,17 +66,37 @@ def _rerank_local(query: str, candidates: list[dict], top_n: int) -> list[dict]:
     return reranked
 
 
-def rerank(query: str, candidates: list[dict], top_n: int = config.FINAL_CONTEXT_N) -> list[dict]:
+def _diversify(ranked: list[dict], top_n: int, per_section: int) -> list[dict]:
+    """Keep rank order, but at most `per_section` chunks from any one section."""
+    picked, counts = [], {}
+    for rec in ranked:
+        sec = rec.get("metadata", {}).get("section_number")
+        if counts.get(sec, 0) >= per_section:
+            continue
+        counts[sec] = counts.get(sec, 0) + 1
+        picked.append(rec)
+        if len(picked) == top_n:
+            break
+    return picked
+
+
+def rerank(
+    query: str,
+    candidates: list[dict],
+    top_n: int = config.FINAL_CONTEXT_N,
+    per_section: int = config.MAX_CHUNKS_PER_SECTION,
+) -> list[dict]:
     if not candidates:
         return []
-
-    top_n = min(top_n, len(candidates))
 
     if _use_cohere():
         if not config.COHERE_API_KEY:
             # Graceful degradation: keep RRF order rather than hard-failing
             # when the Cohere key isn't configured.
-            return candidates[:top_n]
-        return _rerank_cohere(query, candidates, top_n)
+            ranked = candidates
+        else:
+            ranked = _rerank_cohere(query, candidates, len(candidates))
+    else:
+        ranked = _rerank_local(query, candidates, len(candidates))
 
-    return _rerank_local(query, candidates, top_n)
+    return _diversify(ranked, top_n, per_section)

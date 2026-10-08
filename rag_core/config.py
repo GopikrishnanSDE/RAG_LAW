@@ -28,5 +28,12 @@ VECTOR_K = int(os.environ.get("VECTOR_K", "20"))
 KEYWORD_K = int(os.environ.get("KEYWORD_K", "20"))
 IVFFLAT_PROBES = int(os.environ.get("IVFFLAT_PROBES", "20"))  # of 100 lists
 RRF_K = int(os.environ.get("RRF_K", "60"))  # RRF's k constant, not a result count
-RERANK_TOP_N = int(os.environ.get("RERANK_TOP_N", "8"))
+RERANK_TOP_N = int(os.environ.get("RERANK_TOP_N", "20"))
 FINAL_CONTEXT_N = int(os.environ.get("FINAL_CONTEXT_N", "4"))
+# Cap per section in the final context, so a long section/Schedule (Schedule
+# XV is 47 chunks) can't crowd out the short section that governs it.
+MAX_CHUNKS_PER_SECTION = int(os.environ.get("MAX_CHUNKS_PER_SECTION", "2"))
+# Reranked chunks below this relevance are dropped; if none remain, the
+# service refuses without calling the LLM. Calibrated on bge-reranker-base:
+# in-scope questions score >= ~0.4, nonsense/off-topic ~0.0-0.02.
+MIN_RERANK_SCORE = float(os.environ.get("MIN_RERANK_SCORE", "0.1"))

@@ -59,3 +59,29 @@ def hybrid_search(
         rec["in_keyword_results"] = any(h["id"] == cid for h in keyword_hits)
         results.append(rec)
     return results
+
+
+def add_governing_sections(conn, contexts: list[dict]) -> list[dict]:
+    """Append the section each retrieved Schedule chunk belongs to.
+
+    A Schedule is only half the rule: Schedule XV lists what qualifies, but
+    the cap (₹1,50,000) and who may claim (individual/HUF) live in Section
+    123. Retrieval tends to surface the long, keyword-dense Schedule and
+    miss the short section that governs it, so pull that section in
+    explicitly whenever one of its Schedule chunks made the cut.
+    """
+    present = {c["metadata"]["section_number"] for c in contexts}
+    extra = []
+    for c in contexts:
+        part = c["metadata"].get("part") or ""
+        if not part.startswith("See section "):
+            continue
+        # "[See section 123]" -> "123"; skip multi-section refs like "123 and 124"
+        ref = part.removeprefix("See section ").strip()
+        if not ref.isalnum() or ref in present:
+            continue
+        for rec in db.get_section_chunks(conn, ref, limit=1):
+            rec["governs"] = c["metadata"]["section_number"]
+            extra.append(rec)
+        present.add(ref)
+    return contexts + extra

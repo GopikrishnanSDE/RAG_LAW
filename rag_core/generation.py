@@ -20,10 +20,13 @@ using ONLY the retrieved sections provided below. You are not a licensed tax adv
 Rules:
 1. Base your answer strictly on the provided context. Do not use outside knowledge of tax law.
 2. Every claim must cite the section it comes from, like "(Section 123)".
-3. If the retrieved context does not contain enough information to answer the question, \
-say exactly: "I don't have enough information in the retrieved sections to answer that." \
+3. If the context is relevant but only partly answers the question, answer the part it \
+supports and say plainly what the retrieved sections don't cover. Provisions often say \
+"this Chapter" or "this section" — read them in light of the section header above them.
+4. Only if the context contains nothing relevant to the question, reply with exactly: \
+"I don't have enough information in the retrieved sections to answer that." \
 Do not guess or fill gaps from general knowledge.
-4. Be concise. This is informational, not personalized financial or legal advice."""
+5. Be concise. This is informational, not personalized financial or legal advice."""
 
 
 def _get_client():

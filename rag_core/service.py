@@ -40,8 +40,14 @@ def query(req: QueryRequest):
 
     with db.get_connection() as conn:
         candidates = retrieval.hybrid_search(conn, question)
-
-    reranked = reranker.rerank(question, candidates)
+        reranked = [
+            c
+            for c in reranker.rerank(question, candidates)
+            # Cohere-less fallback has no score; keep RRF order as-is then.
+            if c.get("rerank_score") is None or c["rerank_score"] >= config.MIN_RERANK_SCORE
+        ]
+        reranked = retrieval.add_governing_sections(conn, reranked)
+    # No chunk relevant enough -> generate_answer refuses without an LLM call.
     result = generation.generate_answer(question, reranked)
 
     citations = [

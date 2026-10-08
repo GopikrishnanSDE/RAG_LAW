@@ -30,8 +30,16 @@ raw pages (from ingestion_pipeline.load_documents)
      "(a)", "(b)", ... — and only as an absolute last resort, a
      RecursiveCharacterTextSplitter with legal-aware separators.
   -> every emitted chunk gets a one-line header re-stating its section
-     number/title, so chunk 2 of 3 is still self-describing to the embedder
+     number/chapter/title, so chunk 2 of 3 is still self-describing to the embedder
      and to a human reading a retrieval trace.
+  -> the Schedules after the last section ("SCHEDULE XV / [See section
+     123]") are chunked as their own units, split on their "1.", "2."
+     paragraphs. Without this, all 16 Schedules were absorbed into the last
+     section (536, "Repeal and savings") as ~470 mislabelled chunks — so
+     Schedule XV's list of what qualifies under Section 123 (tuition fees,
+     PF, ...) was unreachable as "Section 123" content. Each Schedule
+     chunk's header names the section it belongs to, so both retrieval
+     signals connect it back.
 
 Known limitations (documented, not hidden):
   - The monotonic-number heuristic assumes the Act's sections are scanned in
@@ -76,6 +84,17 @@ CHAPTER_RE = re.compile(r"^[ \t]*CHAPTER\s+([IVXLC]+)[ \t]*$", re.MULTILINE)
 
 # "SCHEDULE XV" / "THE FIRST SCHEDULE" on its own line
 SCHEDULE_RE = re.compile(r"^[ \t]*(?:THE\s+)?SCHEDULE[ \t]*([IVXLC]*)[ \t]*$", re.MULTILINE)
+
+# "[See section 123]" — the line under a Schedule heading naming its section
+SCHEDULE_REF_RE = re.compile(r"^\[See sections? ([^\]]+)\]$", re.IGNORECASE)
+
+# Schedule paragraphs: "1. For any tax year, the following amounts..."
+PARAGRAPH_RE = re.compile(r"(?m)^[ \t]*\d{1,3}\.[ \t]+(?=\S)")
+
+# The PDF's rupee glyph extracts as a backtick ("`  1,50,000"); every one of
+# the corpus's 228 backticks precedes an amount. Swapped 1:1 so character
+# offsets (and therefore page mapping) are unchanged.
+RUPEE_GLYPH = "`"
 
 # "B.—Deductions in respect of certain payments"
 PART_RE = re.compile(r"^[ \t]*([A-Z])\.—(.+)$", re.MULTILINE)
@@ -264,6 +283,54 @@ def _extract_title(preceding_text: str) -> tuple[str, int]:
     return title, consumed
 
 
+def find_schedules(text: str) -> list[dict]:
+    """Return each Schedule as {number, title, ref, start, body_start, end}.
+
+    Heading layout in the corpus:
+        SCHEDULE XV
+        [See section 123]
+        DEDUCTION IN RESPECT OF LIFE INSURANCE PREMIA,
+         CONTRIBUTION TO PROVIDENT FUND, ...
+        Sums qualifying as deduction.
+        1. For any tax year, ...
+    The title is the run of upper-case lines after the "[See section]" line.
+    """
+    matches = list(SCHEDULE_RE.finditer(text))
+    schedules = []
+    for i, m in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        lines = text[m.end() : end].splitlines(keepends=True)
+
+        ref, title_lines, consumed = None, [], 0
+        for ln in lines:
+            stripped = ln.strip()
+            if not stripped:
+                consumed += len(ln)
+                continue
+            ref_m = SCHEDULE_REF_RE.match(stripped)
+            if ref_m and ref is None and not title_lines:
+                ref = ref_m.group(1).strip()
+            elif stripped.upper() == stripped and any(c.isalpha() for c in stripped):
+                title_lines.append(stripped)
+            else:
+                break
+            consumed += len(ln)
+
+        title = " ".join(title_lines).rstrip(",")
+        title = re.sub(r"\s+", " ", title).capitalize() if title else ""
+        schedules.append(
+            {
+                "number": f"Schedule {m.group(1)}",
+                "title": title,
+                "ref": ref,
+                "start": m.start(),
+                "body_start": m.end() + consumed,
+                "end": end,
+            }
+        )
+    return schedules
+
+
 # --------------------------------------------------------------------------
 # Step 3: structural context (chapter / part / schedule) per offset
 # --------------------------------------------------------------------------
@@ -377,7 +444,14 @@ def chunk_documents(
 ) -> list[Chunk]:
     """Turn loaded page-level Documents into section-aware chunks with metadata."""
     text, page_spans = concat_pages(docs)
-    sections = find_section_boundaries(text)
+    text = text.replace(RUPEE_GLYPH, "₹")
+    schedules = find_schedules(text)
+    first_schedule = schedules[0]["start"] if schedules else len(text)
+    sections = [
+        s for s in find_section_boundaries(text) if s["marker_start"] < first_schedule
+    ]
+    for sec in sections:
+        sec["end"] = min(sec["end"], first_schedule)
     context_markers = build_context_index(text)
     amendment_notes = extract_amendment_notes(text)
 
@@ -392,6 +466,11 @@ def chunk_documents(
         total = len(pieces)
         for idx, piece in enumerate(pieces, start=1):
             header = f"Section {sec['number']}"
+            # Name the chapter: provisions say "this Chapter", while users
+            # (and competing sections elsewhere in the Act) say "Chapter
+            # VIII" — without it, 122(2) lost to s.198 on that exact phrase.
+            if ctx["chapter"]:
+                header += f" ({ctx['chapter']})"
             if sec["title"]:
                 header += f" — {sec['title']}"
             if total > 1:
@@ -408,6 +487,45 @@ def chunk_documents(
                         "section_title": sec["title"],
                         "chapter": ctx["chapter"],
                         "part": ctx["part"],
+                        "chunk_index": idx,
+                        "chunk_count": total,
+                        "page_start": page_start,
+                        "page_end": page_end,
+                        "amendments": _amendments_in(piece, amendment_notes) or None,
+                    },
+                )
+            )
+
+    for sch in schedules:
+        body = text[sch["body_start"] : sch["end"]].strip()
+        if not body:
+            continue
+        pieces = []
+        for para in _split_by_marker(body, PARAGRAPH_RE):
+            pieces.extend(_split_section_body(para, max_tokens, hard_max_tokens))
+        page_start = _page_for_offset(page_spans, sch["start"])
+        page_end = _page_for_offset(page_spans, max(sch["end"] - 1, sch["start"]))
+
+        total = len(pieces)
+        for idx, piece in enumerate(pieces, start=1):
+            header = sch["number"]
+            if sch["ref"]:
+                header += f" (see Section {sch['ref']})"
+            if sch["title"]:
+                header += f" — {sch['title']}"
+            if total > 1:
+                header += f" (part {idx}/{total})"
+
+            chunks.append(
+                Chunk(
+                    text=f"{header}\n\n{piece.strip()}",
+                    metadata={
+                        "act_name": act_name,
+                        "source_file": source_file,
+                        "section_number": sch["number"],
+                        "section_title": sch["title"],
+                        "chapter": None,
+                        "part": f"See section {sch['ref']}" if sch["ref"] else None,
                         "chunk_index": idx,
                         "chunk_count": total,
                         "page_start": page_start,

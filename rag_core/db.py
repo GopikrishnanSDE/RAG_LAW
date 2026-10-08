@@ -145,6 +145,28 @@ def vector_search(conn, query_embedding: list[float], k: int) -> list[dict]:
     return results
 
 
+def get_section_chunks(conn, section_number: str, limit: int) -> list[dict]:
+    """First `limit` chunks of a section, in document order."""
+    columns = [
+        "id", "act_name", "source_file", "section_number", "section_title",
+        "chapter", "part", "chunk_index", "chunk_count", "page_start",
+        "page_end", "amendments", "text",
+    ]
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT {", ".join(columns)}
+            FROM chunks
+            WHERE section_number = %s
+            ORDER BY chunk_index
+            LIMIT %s
+            """,
+            (section_number, limit),
+        )
+        rows = cur.fetchall()
+    return [_row_to_dict(row, columns) for row in rows]
+
+
 def keyword_search(conn, query_text: str, k: int) -> list[dict]:
     columns = [
         "id", "act_name", "source_file", "section_number", "section_title",
