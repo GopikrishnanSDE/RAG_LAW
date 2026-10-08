@@ -1,0 +1,24 @@
+name: Unit tests
+
+# Fast checks on every push: the tax calculator's arithmetic against
+# hand-computed cases, and the guard that rejects amounts the LLM invents.
+# No models, database or heavy ML dependencies needed.
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install pytest python-dotenv requests
+
+      - name: Run tests
+        run: python -m pytest tests -q
