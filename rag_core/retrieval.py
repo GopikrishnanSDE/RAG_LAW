@@ -85,3 +85,87 @@ def add_governing_sections(conn, contexts: list[dict]) -> list[dict]:
             extra.append(rec)
         present.add(ref)
     return contexts + extra
+
+
+def multi_query_search(conn, queries: list[str], top_n: int = config.MULTI_QUERY_CANDIDATES) -> list[dict]:
+    """Hybrid-search each query, then RRF-fuse the per-query rankings.
+
+    queries[0] is the user's own question; the rest are statute-worded
+    rewrites from query_analysis. Fusing rankings (not scores) keeps any one
+    rewrite from dominating, the same reason vector and keyword hits are
+    fused that way.
+    """
+    if len(queries) == 1:
+        return hybrid_search(conn, queries[0])
+
+    by_id: dict = {}
+    rankings = []
+    for q in queries:
+        hits = hybrid_search(conn, q)
+        rankings.append([h["id"] for h in hits])
+        for h in hits:
+            by_id.setdefault(h["id"], h)
+
+    fused = reciprocal_rank_fusion(rankings, k=config.RRF_K)
+    ranked_ids = sorted(fused, key=lambda cid: fused[cid], reverse=True)[:top_n]
+    results = []
+    for cid in ranked_ids:
+        rec = dict(by_id[cid])
+        rec["rrf_score"] = fused[cid]
+        results.append(rec)
+    return results
+
+
+# The chunks holding the numbers the calculator applies — always shown to the
+# LLM (and the user) alongside a computed result, so every figure is traceable.
+CALCULATOR_SOURCES = {
+    "202": [1],  # slab table
+    "156": [1],  # rebate
+    "19": [1, 2],  # standard deduction (the table row is split across two chunks)
+    "58": [2],  # presumptive table
+}
+
+
+def calculator_sources(conn, sections: list[str], already: list[dict]) -> list[dict]:
+    present = {c["id"] for c in already if "id" in c}
+    out = []
+    for sec in sections:
+        idxs = CALCULATOR_SOURCES.get(sec)
+        if not idxs:
+            continue
+        for rec in db.get_section_chunks(conn, sec, limit=len(idxs), chunk_indexes=idxs):
+            if rec["id"] not in present:
+                rec["calculator_source"] = True
+                out.append(rec)
+    return out
+
+
+def add_siblings(
+    conn,
+    candidates: list[dict],
+    n_sections: int = config.SIBLING_SECTIONS,
+    max_chunks: int = config.SIBLING_MAX_CHUNKS,
+) -> list[dict]:
+    """Add the other chunks of the top `n_sections` sections to the candidates.
+
+    Retrieval matches chunks, but the answer often sits in a sibling chunk of
+    the same section. For "When am I considered resident in India?" seven
+    parts of s.6 were retrieved but not (2), the 182-day rule — and given
+    the whole section, the reranker puts (2) near the top.
+    """
+    seen_ids = {c["id"] for c in candidates}
+    top_sections = []
+    for c in candidates:
+        sec = c["metadata"]["section_number"]
+        if sec not in top_sections:
+            top_sections.append(sec)
+        if len(top_sections) == n_sections:
+            break
+
+    extra = []
+    for sec in top_sections:
+        for rec in db.get_section_chunks(conn, sec, limit=max_chunks):
+            if rec["id"] not in seen_ids:
+                seen_ids.add(rec["id"])
+                extra.append(rec)
+    return candidates + extra

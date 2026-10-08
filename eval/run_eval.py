@@ -16,6 +16,12 @@ Generation (LLM-as-judge, run locally via Ollama — free, no API key):
                      context (1 / 0.5 / 0).
   - correctness      the answer agrees with the ground truth (1 / 0.5 / 0).
 
+Tax computation (deterministic):
+  - calc_accuracy    share of "how much tax on X" questions whose answer
+                     states exactly the hand-computed tax. These answers are
+                     built in code (tax_calculator.py), so they're checked
+                     against expected_tax, not judged by an LLM.
+
 Refusal behaviour (deterministic):
   - refusal_rate     out-of-scope questions answered with the refusal line.
   - false_refusals   in-scope questions wrongly refused (reported, not gated:
@@ -40,6 +46,7 @@ Exits non-zero if any gated metric falls below its threshold.
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -50,10 +57,12 @@ THRESHOLDS = {
     "mrr": 0.60,
     "faithfulness": 0.80,
     "correctness": 0.60,
+    "calc_accuracy": 0.80,
     "refusal_rate": 0.75,
 }
 
 REFUSAL = "I don't have enough information in the retrieved sections"
+TAX_LINE_RE = re.compile(r"Estimated income-tax: ₹([\d,]+)")
 TESTSET_PATH = Path(__file__).parent / "testset.jsonl"
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 JUDGE_MODEL = os.environ.get("JUDGE_MODEL", os.environ.get("GENERATION_MODEL", "qwen2.5:7b"))
@@ -145,7 +154,7 @@ def main():
     testset = load_testset()
     print(f"Running {len(testset)} eval questions against {args.api_url} (judge: {JUDGE_MODEL})\n")
 
-    hits, rr, faith, correct, refused_oos, false_refusals = [], [], [], [], [], 0
+    hits, rr, faith, correct, calc_ok, refused_oos, false_refusals = [], [], [], [], [], [], 0
     for case in testset:
         q = case["question"]
         resp = requests.post(args.api_url, json={"question": q}, timeout=300)
@@ -162,6 +171,18 @@ def main():
         rank = first_hit_rank(contexts, case["expected_sections"])
         hits.append(1.0 if rank else 0.0)
         rr.append(1.0 / rank if rank else 0.0)
+
+        if "expected_tax" in case:
+            m = TAX_LINE_RE.search(answer)
+            got = int(m.group(1).replace(",", "")) if m else None
+            ok = got == case["expected_tax"]
+            calc_ok.append(1.0 if ok else 0.0)
+            print(
+                f"[{'PASS' if ok else 'FAIL'}] calculation   {q}\n"
+                f"           expected ₹{case['expected_tax']:,}, got "
+                + (f"₹{got:,}" if got is not None else "no computed figure")
+            )
+            continue
 
         if refused:
             # Refusing an in-scope question claims nothing (faithful) but
@@ -190,6 +211,7 @@ def main():
         "mrr": mean(rr),
         "faithfulness": mean(faith),
         "correctness": mean(correct),
+        "calc_accuracy": mean(calc_ok),
         "refusal_rate": mean(refused_oos),
     }
 

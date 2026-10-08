@@ -63,6 +63,10 @@
   }
   .examples button:hover { border-color: var(--accent); }
   .typing { color: var(--muted); font-style: italic; }
+  .badge {
+    display: inline-block; margin-bottom: 8px; padding: 2px 8px; border-radius: 999px;
+    background: var(--accent-soft); color: var(--accent); font-size: 12px; font-weight: 600;
+  }
   footer { border-top: 1px solid var(--border); background: var(--panel); padding: 12px 16px; }
   form { max-width: 820px; margin: 0 auto; display: flex; gap: 8px; }
   input {
@@ -82,19 +86,20 @@
 <header>
   <div class="wrap">
     <h1>Ask My Tax Docs</h1>
-    <p>Income-tax Act, 2025 · Chapter VIII deductions · answers cite the sections they come from</p>
+    <p>Income-tax Act, 2025 · for individuals and businesses · answers cite the sections they come from</p>
   </div>
 </header>
 
 <main>
   <div id="chat">
     <div class="empty" id="empty">
-      Ask a question about tax deductions.
+      Ask about income tax: rates, salary, business income, deductions, capital gains, residency.
       <div class="examples">
-        <button>What is the deduction for interest on an education loan?</button>
-        <button>How much can I deduct for life insurance premium?</button>
-        <button>Deduction for donations to charitable institutions?</button>
-        <button>Tax break for medical treatment of a disabled dependant?</button>
+        <button>My business earns ₹20 lakh. How much tax do I pay?</button>
+        <button>My salary is ₹15 lakh. What's my tax under the new regime?</button>
+        <button>Can I claim a deduction for my child's tuition fees?</button>
+        <button>When am I considered resident in India?</button>
+        <button>How is long-term capital gain on property taxed?</button>
       </div>
     </div>
   </div>
@@ -102,10 +107,10 @@
 
 <footer>
   <form id="form">
-    <input id="q" placeholder="Ask about a deduction…" autocomplete="off" maxlength="500" autofocus>
+    <input id="q" placeholder="Ask an income-tax question…" autocomplete="off" maxlength="500" autofocus>
     <button class="send" type="submit">Ask</button>
   </form>
-  <div class="disclaimer">Informational only, not tax advice. Answers come from a local model and can be wrong.</div>
+  <div class="disclaimer">Informational only, not tax advice. Covers the Income-tax Act, 2025 only (not the Rules, circulars or Finance Act cess/surcharge). Answers can be wrong.</div>
 </footer>
 
 <script>
@@ -130,17 +135,23 @@ function add(cls, html) {
 }
 
 function renderAnswer(d, secs) {
-  const answer = esc(d.answer).replace(/\(Section[^)]*\)/g, m => `<span class="cite">${m}</span>`);
+  const answer = esc(d.answer).replace(/\((?:Section|Schedule)(?:[^()]|\([^()]*\))*\)/g, m => `<span class="cite">${m}</span>`);
+  const computed = d.calculation && d.calculation.supported;
   const sources = (d.contexts || []).map(c => {
     const m = c.metadata || {};
-    const score = c.rerank_score != null ? ` <span class="score">· relevance ${c.rerank_score.toFixed(2)}</span>` : "";
-    return `<div class="source"><h4>Section ${esc(m.section_number)} — ${esc(m.section_title || "")}${score}</h4>
+    const score = c.calculator_source
+      ? ` <span class="score">· used by the calculator</span>`
+      : c.rerank_score != null ? ` <span class="score">· relevance ${c.rerank_score.toFixed(2)}</span>` : "";
+    const num = String(m.section_number);
+    const label = num.startsWith("Schedule") ? num : `Section ${num}`;
+    return `<div class="source"><h4>${esc(label)} — ${esc(m.section_title || "")}${score}</h4>
             <pre>${esc(c.text)}</pre></div>`;
   }).join("");
   const refusal = d.answer.startsWith(REFUSAL);
   return {
     cls: "bot" + (refusal ? " refusal" : ""),
-    html: `<div class="answer">${answer}</div>
+    html: `${computed ? '<div class="badge">Computed in code from the Act\'s rates</div>' : ""}
+           <div class="answer">${answer}</div>
            <div class="meta">${esc(d.model || "")} · ${secs}s</div>
            ${sources ? `<details><summary>Retrieved sources (${d.contexts.length})</summary>${sources}</details>` : ""}`,
   };
