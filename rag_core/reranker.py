@@ -55,8 +55,13 @@ def _rerank_cohere(query: str, candidates: list[dict], top_n: int) -> list[dict]
     return reranked
 
 
-def _rerank_local(query: str, candidates: list[dict], top_n: int) -> list[dict]:
-    scores = _get_local_model().predict([(query, c["text"]) for c in candidates])
+def _rerank_local(queries: list[str], candidates: list[dict], top_n: int) -> list[dict]:
+    # Score each candidate against every query and keep its best score: a
+    # chunk worded like the statute can score low against "how much tax on
+    # 20 lakh" yet high against the rewrite "rate of income-tax".
+    model = _get_local_model()
+    per_query = [model.predict([(q, c["text"]) for c in candidates]) for q in queries]
+    scores = [max(col) for col in zip(*per_query)]
     order = sorted(range(len(candidates)), key=lambda i: scores[i], reverse=True)
     reranked = []
     for i in order[:top_n]:
@@ -85,6 +90,7 @@ def rerank(
     candidates: list[dict],
     top_n: int = config.FINAL_CONTEXT_N,
     per_section: int = config.MAX_CHUNKS_PER_SECTION,
+    extra_queries: list[str] = (),
 ) -> list[dict]:
     if not candidates:
         return []
@@ -97,6 +103,6 @@ def rerank(
         else:
             ranked = _rerank_cohere(query, candidates, len(candidates))
     else:
-        ranked = _rerank_local(query, candidates, len(candidates))
+        ranked = _rerank_local([query, *extra_queries], candidates, len(candidates))
 
     return _diversify(ranked, top_n, per_section)
