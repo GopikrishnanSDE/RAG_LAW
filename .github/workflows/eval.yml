@@ -1,13 +1,20 @@
 name: Retrieval quality eval
 
+# Manual-only for now: a full run downloads a ~4.7 GB local model and runs
+# CPU inference for every question, which is too slow (and too wasteful of
+# free runner minutes) to trigger on every push. Run it from the Actions tab
+# ("Run workflow") before tagging a release or after retrieval changes.
 on:
-  pull_request:
-  push:
-    branches: [main]
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Ollama model for generation and judging"
+        default: "qwen2.5:7b"
 
 jobs:
   eval:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
 
     services:
       db:
@@ -24,11 +31,10 @@ jobs:
           --health-timeout 5s
           --health-retries 10
 
+    # Everything runs locally on the runner: no API keys, no paid services.
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/rag_law
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GENERATION_MODEL: ${{ inputs.model }}
       PYTHON_SERVICE_URL: http://localhost:8000
 
     steps:
@@ -43,28 +49,39 @@ jobs:
           node-version: "20"
 
       - name: Install Python deps
-        run: pip install -r requirements.txt
+        run: |
+          # CPU-only torch: the default wheel bundles ~2 GB of CUDA libraries
+          # the runner can't use.
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
 
       - name: Install Node deps
         working-directory: api
-        run: npm install
+        run: npm ci
 
-      - name: Fetch corpus PDF
-        run: curl -fsSL "${{ secrets.CORPUS_PDF_URL }}" -o data/income_tax_act_2025.pdf
+      - name: Install Ollama and pull model
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          (ollama serve > /tmp/ollama.log 2>&1 &)
+          npx --yes wait-on http://localhost:11434/api/version --timeout 60000
+          ollama pull "$GENERATION_MODEL"
 
       - name: Ingest corpus
         run: python scripts/ingest.py --reset
 
       - name: Start RAG core service
-        run: nohup uvicorn rag_core.service:app --host 0.0.0.0 --port 8000 &
+        run: nohup uvicorn rag_core.service:app --host 0.0.0.0 --port 8000 > /tmp/core.log 2>&1 &
 
       - name: Start Node API layer
         working-directory: api
-        run: nohup node src/index.js &
+        run: nohup node src/index.js > /tmp/api.log 2>&1 &
 
       - name: Wait for services
-        run: |
-          npx wait-on http://localhost:8000/health http://localhost:3000/health --timeout 30000
+        run: npx --yes wait-on http://localhost:8000/health http://localhost:3000/health --timeout 120000
 
-      - name: Run Ragas eval gate
-        run: python eval/ragas_eval.py --api-url http://localhost:3000/api/query
+      - name: Run eval gate
+        run: python eval/run_eval.py --api-url http://localhost:3000/api/query
+
+      - name: Service logs
+        if: failure()
+        run: tail -n 100 /tmp/core.log /tmp/api.log /tmp/ollama.log
