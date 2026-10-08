@@ -1,4 +1,7 @@
 import "dotenv/config";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 import cors from "cors";
 import express from "express";
 import { rateLimit } from "express-rate-limit";
@@ -10,6 +13,9 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
+// Chat UI. Served before the rate limiter so loading the page doesn't
+// count against the per-minute query budget.
+app.use(express.static(path.join(path.dirname(fileURLToPath(import.meta.url)), "../public")));
 app.use(express.json({ limit: "10kb" }));
 app.use(
   rateLimit({

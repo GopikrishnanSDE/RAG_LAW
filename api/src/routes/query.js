@@ -24,7 +24,9 @@ router.post("/", async (req, res, next) => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ question: parsed.data.question }),
-      signal: AbortSignal.timeout(30_000),
+      // Generous: answers come from a local LLM, which can take 20s+ on a
+      // cold start.
+      signal: AbortSignal.timeout(120_000),
     });
 
     const body = await upstream.json();
